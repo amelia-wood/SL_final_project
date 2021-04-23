@@ -1,0 +1,402 @@
+---
+title: "Statistical Learning Final Project"
+subtitle: STA3241.01 -- April 23, 2021
+author: "Amelia Wood"
+output:
+  html_document:
+    theme: spacelab
+    toc: yes
+    toc_float: yes
+  pdf_document:
+    toc: yes
+  word_document:
+    toc: yes
+---
+
+
+# Introduction
+
+The purpose of this project was to use the data from the eBayAuctions dataset to build a model that will classify auctions as either competitive or non-competitive. I explored multiple different models throughout this project including, Classification Trees, Logistic Regression, Support Vector Machines, Lasso and Ridge Regression, and Ordinary Least Squares. The comparisons for the models can be seen throughout this project. The full code for this project can be found [here](https://github.com/amelia-wood/SL_final_project.git).
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(caret)
+library(ISLR)
+library(rpart)
+library(rpart.plot)
+library(glmnet)
+library(coefplot)
+library(leaps)
+library(MLeval)
+```
+
+
+# Dataset
+
+I first obtained my dataset from the reisanar/datasets GitHub Repo. I then changed the Duration variable to be a factor. The Data Dictionary for this dataset can be seen below. 
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE}
+myurl  <- "https://raw.githubusercontent.com/reisanar/datasets/master/eBayAuctions.csv"
+auctions <- read_csv(myurl)
+```
+
+
+
+```{r, message=FALSE, echo=FALSE, results='hide'}
+#Make Duration a categorical variable.
+auctions <- auctions %>%
+  mutate(Duration = factor(Duration))%>%
+  mutate(Category = factor(Category))%>%
+  mutate(currency = factor(currency))%>%
+  mutate(endDay = factor(endDay))
+```
+
+
+## Data Dictionary
+
+|Field Name | Description | Data Type | 
+|:----------|:---------------|:---------|
+|Category|Category of the auctioned item|character|
+|currency|Currency|character|
+|sellerRating|A rating by eBay, as a function of the number of “good” and “bad” transactions the seller had on eBay|double|
+|Duration|Number of days the auction lasted (set by seller at auction start)|factor|
+|endDay|Day of week that the auction closed|character|
+|ClosePrice|Price item sold at (converted into USD)|double|
+|OpenPrice|Initial price set by the seller (converted into USD)|double|
+|Competitive?|Whether the auction had a single bid (0) or more (1)|double|
+
+
+# Modeling
+
+## Preprocessing
+
+```{r, message=FALSE, echo=FALSE, results='hide'}
+# Make Valid Column Names 
+colnames(auctions) <- make.names(colnames(auctions))
+```
+
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE}
+#splitting the data into training and testing
+inTrain <- createDataPartition(y = auctions$Competitive., p = 0.60, list = FALSE)
+
+train <- auctions[inTrain, ]
+test <- auctions[-inTrain, ]
+```
+
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE}
+#Setting the random seed for replication
+set.seed(217)
+#setting up cross-validation
+cvcontrol <- trainControl(method = "cv", number = 10, allowParallel = TRUE)
+```
+
+
+```{r, message=FALSE, echo=FALSE}
+sub_fit <- regsubsets(Competitive. ~ . , data = auctions)
+best_summary <- summary(sub_fit)
+```
+
+
+```{r, message=FALSE, echo=FALSE}
+#Plots
+par(mfrow = c(1,2)) 
+plot(best_summary$cp, xlab = "Number of features", ylab = "Mallows Cp", main = "Optimal Number of Predictors: Cp", col = "dark blue", type = "b")
+plot(sub_fit, scale = "Cp", main = "Best Variables for Modelling", col = "dark red")
+par(mfrow = c(1,2))
+plot(best_summary$adjr2, xlab = "Number of features", ylab = "Adjusted-R^2", main = "Optimal Number of Predictors", col = "dark blue", type = "b")
+plot(best_summary$bic, xlab = "Number of features", ylab = "BIC", main = "Optimal Number of Predictors", col = "dark red", type = "b")
+```
+
+
+
+
+## Classification Tree
+
+
+The first model I chose to explore was a Classification tree.
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE}
+dt_auctions <- train(Competitive. ~ . , data = train, method = "rpart", 
+                     trControl = cvcontrol, tuneLength = 10)
+```
+
+```{r}
+dt_auctions
+```
+
+
+```{r, echo=FALSE, message = FALSE, results='hold'}
+plot(dt_auctions)
+```
+
+
+
+```{r, echo=FALSE, message = FALSE, results='hold'}
+rpart.plot(dt_auctions$finalModel)
+```
+```{r, echo = FALSE, warning=FALSE, message=FALSE}
+#tree_pred <- predict(dt_auctions, test)
+#confusionMatrix(tree_pred, test$ClosePrice)
+```
+
+
+## Logistic Regression
+
+Here, I created a logistic regression model using all of the predictors in the eBay Auctions dataset except for the closing price. I wanted to see what other factors, other than closing price, had an effect on whether an auction will be competitive or not. 
+
+```{r}
+# basic logistic regression model
+auctions_lr <- glm(Competitive. ~ Category + sellerRating + Duration + endDay + OpenPrice, family = "binomial", data = auctions)
+summary(auctions_lr)
+```
+
+
+In the visualization below, each graph is separated into category. The x-axis is the seller rating, from highest to lowest, and the y-axis is whether or not an auction was competitive (0 meaning whether the auction had a single bid and 1 meaning more than one bid). For example, if we look at the Collectibles category, we can see that the auctions where the seller rating was higher were more competitive than the auctions where the seller rating was lower.
+
+
+```{r, message=FALSE, echo=FALSE}
+# visualization
+ggplot(auctions, aes(x = sellerRating, y = Competitive.)) + 
+  geom_point() + 
+  stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE) +
+  facet_wrap(~Category)
+```
+
+```{r, echo = FALSE, warning=FALSE, message=FALSE}
+#lr_pred <- predict(auctions_lr, test)
+#confusionMatrix(lr_pred, test$Competitive.)
+```
+
+
+
+## SVM
+
+In this section, I used two different support vector methods to predict whether an auction is competitive or not. 
+
+```{r, message=FALSE, echo=FALSE}
+auctions <- auctions %>%
+  mutate(Competitive. = factor(Competitive.))
+```
+
+
+```{r, message=FALSE, echo=FALSE}
+#train control
+tr_control <- trainControl(method = "cv", number = 10,
+                           classProbs = TRUE, summaryFunction = twoClassSummary,
+                           savePredictions = TRUE)
+```
+
+
+```{r, message=FALSE, echo=FALSE}
+inTrain_svm <- createDataPartition(y = auctions$Competitive., p = 0.7, list = FALSE)
+#train/test datasets
+train_data <- auctions[inTrain_svm, ]
+test_data <- auctions[-inTrain_svm, ]
+levels(train_data$Competitive.) <- c("No", "Yes")
+```
+
+
+```{r, message=FALSE, echo=FALSE}
+# grid
+tGrid <- expand.grid(C = c(0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 5))
+# model 1:
+svm_model_1 <- train(Competitive. ~ . ,
+  data = train_data,
+  method = "svmLinear",
+  tuneGrid = tGrid,
+  trControl = tr_control,
+  metric = "ROC",
+  preProcess = c("center", "scale")
+)
+```
+
+I first created a Support Vector Machine with a Linear Kernel, seen below. 
+
+```{r}
+svm_model_1
+```
+
+
+```{r, message=FALSE, echo=FALSE}
+# RBF grid
+rad_grid <- expand.grid( C = c(0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5),
+                         sigma = c(1e-3, 1e-2, 1e-1))
+
+# New model
+svm_rad_1 <- train(Competitive. ~ . ,
+  data = train_data,
+  method = "svmRadial",
+  tuneGrid = rad_grid,
+  trControl = tr_control,
+  metric = "ROC",
+  preProcess = c("center", "scale")
+)
+```
+
+Next, I created a Support Vector Machine with a Radial Kernel, seen below.
+
+```{r}
+svm_rad_1
+```
+
+This plot shows the AUC-ROC for the Linear SVM and Radial SVM. The Linear SVM has an AUC-ROC of 0.85 while the Radial SVM has an AUC-ROC of 0.73, making the Linear SVM the better option in this case. 
+
+```{r, message=FALSE, echo=FALSE}
+plot_metrics <- evalm(list1 = list(svm_model_1, svm_rad_1),
+                      gnames = c("Linear SVM", "Radial SVM"),
+                      plot = "r")
+```
+
+
+
+## Other Techniques
+
+
+```{r, message=FALSE, echo=FALSE, results='hide'}
+grid <- seq(-2,10,length=100)
+```
+
+### Ridge Regression
+
+
+```{r, message=FALSE, echo=FALSE, results='hide'}
+train_control <-  trainControl(method = "cv", number = 10)
+```
+
+```{r, message=FALSE, echo=FALSE, results='hide'}
+inTrain2 <- createDataPartition(y = auctions$Competitive., p = 0.8, list = FALSE)
+
+train_set <- auctions[inTrain2 , ]
+test_set <- auctions[-inTrain2 , ]
+```
+
+```{r}
+ridge_model <- train(ClosePrice ~ ., data = train_set, 
+               method = "glmnet", 
+               trControl = train_control,
+               metric =  "Rsquared",
+               tuneGrid = expand.grid(alpha = 0, lambda = grid))
+```
+
+Coefficients for the Ridge Regression model.
+
+```{r}
+# Model coefficients
+coef(ridge_model$finalModel, ridge_model$bestTune$lambda)
+```
+
+```{r, message=FALSE, echo=FALSE, results='hide'}
+# Make predictions
+predictions_ridge <- predict(ridge_model, newdata = test_set)
+```
+
+RMSE and Rsquare for the Ridge Regression model.
+
+```{r}
+# Model prediction performance
+data.frame(
+  RMSE = RMSE(predictions_ridge, test_set$ClosePrice),
+  Rsquare = R2(predictions_ridge, test_set$ClosePrice)
+)
+```
+
+### LASSO
+
+
+
+```{r}
+lasso_model <- train(ClosePrice ~ ., data = train_set, 
+               method = "glmnet",
+               trControl = train_control,
+               #metric =  "Rsquared",
+               #tuneGrid = expand.grid(alpha = 1, lambda = ridge_model$finalModel$lambdaOpt)
+               tuneGrid = expand.grid(alpha = 1, lambda = grid)
+               )
+```
+
+Coefficients for the Lasso model.
+
+```{r}
+# Model coefficients
+coef(lasso_model$finalModel, lasso_model$bestTune$lambda)
+```
+
+```{r, message=FALSE, echo=FALSE, results='hide'}
+# Make predictions
+predictions_lasso <- predict(lasso_model, newdata = test_set)
+```
+
+RMSE and Rsquare for Lasso.
+
+```{r}
+# Model prediction performance
+data.frame(
+  RMSE = RMSE(predictions_lasso, test_set$ClosePrice),
+  Rsquare = R2(predictions_lasso, test_set$ClosePrice)
+)
+```
+
+
+### Ordinary Least-Squares
+
+```{r}
+linear_model <- train(ClosePrice ~ ., data = train_set, 
+                      method = 'lm',
+                      metric =  "Rsquared"
+              )
+```
+
+Coefficients for the Ordinary Least-Squares model.
+
+```{r}
+coef(linear_model$finalModel)
+```
+
+
+### Comparing Ridge, Lasso, and Ordinary Least-Squares
+
+After creating the models for Ridge, Lasso, and Ordinary Least Squares, I wanted to compare them to one another to see which was the best model that minimizes the prediction error. 
+
+```{r}
+my_models <- list(ridge = ridge_model, lasso = lasso_model)
+resamples(my_models) %>% 
+  summary( metric = "RMSE")
+```
+Here are the predictions for each model:
+```{r}
+predictions_lasso <- predict(lasso_model, test_set)
+predictions_ridge <- predict(ridge_model, test_set)
+predictions_linear <- predict(linear_model, test_set)
+
+data.frame(
+  Ridge_R2 = R2(predictions_ridge, test_set$ClosePrice),
+  Lasso_R2 = R2(predictions_lasso, test_set$ClosePrice),
+  Linear_R2 = R2(predictions_linear, test_set$ClosePrice)
+)
+```
+
+Below, I compared the coefficients of each model to one another.
+```{r}
+data.frame(
+  ridge = as.data.frame.matrix(coef(ridge_model$finalModel, ridge_model$finalModel$lambdaOpt)),
+  lasso = as.data.frame.matrix(coef(lasso_model$finalModel, lasso_model$finalModel$lambdaOpt)), 
+  linear = (linear_model$finalModel$coefficients)
+) %>% 
+  rename(ridge = X1, lasso = X1.1)
+```
+
+This interactive graph shows the coefficient path for the Ridge Regression model.
+```{r, message=FALSE, echo=FALSE}
+# coefficient path for ridge regression
+coefpath(ridge_model$finalModel)
+```
+
+
+This interactive graph shows the coefficient path for the Lasso model.
+```{r, message=FALSE, echo=FALSE}
+coefpath(lasso_model$finalModel)
+```
+
+
